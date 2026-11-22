@@ -1755,7 +1755,7 @@ export default function App() {
       pronouns: '',
       status: 'online',
       customStatus: '',
-      bio: '¡Nuevo en Discord!',
+      bio: '¡Nuevo en Primordial!',
       bannerColor: '#5865F2',
       avatar: payload.avatar,
       decoration: 'none',
@@ -1795,7 +1795,7 @@ export default function App() {
     } catch {
       /* ignore */
     }
-    showToastMsg(`¡Bienvenido a Discord, ${payload.displayName}! (+1.200 Orbs)`);
+    showToastMsg(`¡Bienvenido a Primordial, ${payload.displayName}! (+1.200 Orbs)`);
   };
 
   const handleLogout = () => {
