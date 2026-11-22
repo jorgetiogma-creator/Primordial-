@@ -20,6 +20,7 @@ import {
   UserAvatar,
 } from './DiscordArt';
 import { BoostGemIcon } from './ServerBoostView';
+import { PWAInstallButton } from './PWAPrompts';
 
 /* ---------------- EXACT SETTINGS VIEW (Screenshots 5 & 6) ---------------- */
 export const SettingsView: React.FC<{
@@ -254,6 +255,8 @@ export const SettingsView: React.FC<{
               className="flex-1 bg-transparent text-[15px] text-[var(--dc-text-primary)] placeholder:text-[var(--dc-text-muted)] focus:outline-none"
             />
           </div>
+
+          <PWAInstallButton variant="card" />
 
           {/* Ajustes de la cuenta */}
           {accountRows.length > 0 && (

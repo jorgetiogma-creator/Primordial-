@@ -73,6 +73,7 @@ import {
   SettingsView,
   VoiceOverlay,
 } from './components/SettingsAndModals';
+import { OfflineIndicator, PWAInstallButton } from './components/PWAPrompts';
 
 const STORAGE_KEY = 'discord_full_app_state_v2';
 const ACCOUNTS_KEY = 'discord_accounts_v1';
@@ -2710,6 +2711,7 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              <PWAInstallButton variant="compact" />
               <button
                 onClick={() => setTheme((t) => (t === 'light' ? 'onyx' : 'light'))}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full dc-btn-secondary text-xs font-semibold cursor-pointer"
@@ -3112,6 +3114,7 @@ export default function App() {
           }
         }}
       />
+      <OfflineIndicator />
     </div>
     </MotionConfig>
   );
