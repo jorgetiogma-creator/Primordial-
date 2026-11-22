@@ -234,6 +234,8 @@ export interface StoredAccount {
   id: string;
   contact: string;
   password: string;
+  twoFactorEnabled?: boolean;
+  backupCodes?: string[];
   user: UserProfile;
   ownedBundleIds: string[];
   wishlistIds: string[];

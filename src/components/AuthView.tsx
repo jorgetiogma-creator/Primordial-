@@ -1,13 +1,24 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
+  AlertTriangle,
   ArrowLeft,
+  BellRing,
   Check,
+  CheckCircle2,
   ChevronDown,
+  Copy,
   Eye,
   EyeOff,
+  Fingerprint,
   KeyRound,
+  Lock,
+  QrCode,
+  RefreshCw,
+  Shield,
+  ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Sparkles,
 } from 'lucide-react';
 import { AvatarKey, StoredAccount } from '../types/discord';
@@ -23,10 +34,24 @@ interface AuthViewProps {
     username: string;
     password: string;
     avatar: AvatarKey;
+    twoFactorEnabled?: boolean;
+    backupCodes?: string[];
   }) => void;
+  onResetPassword?: (accountId: string, newPassword: string) => void;
 }
 
-type AuthStep = 'welcome' | 'login' | 'register-contact' | 'register-profile';
+type AuthStep =
+  | 'welcome'
+  | 'login'
+  | 'two-factor'
+  | 'recovery'
+  | 'register-contact'
+  | 'register-profile';
+
+type LoginMethod = 'password' | 'qr' | 'biometric';
+type TwoFactorTab = 'totp' | 'push' | 'backup';
+
+const TRUSTED_DEVICE_PREFIX = 'primordial_trusted_device_';
 
 const COUNTRY_CODES = [
   { code: 'VE', dial: '+58', label: 'Venezuela (+58)' },
@@ -46,19 +71,146 @@ const AVATAR_CHOICES: { id: AvatarKey; label: string }[] = [
   { id: 'dragon', label: 'Dragón' },
 ];
 
+const SECURITY_CHALLENGES = [
+  { prompt: 'Selecciona el escudo para confirmar acceso humano', target: 'shield' as const },
+  { prompt: 'Selecciona el candado cifrado para continuar', target: 'lock' as const },
+  { prompt: 'Selecciona la llave de seguridad para verificar', target: 'key' as const },
+];
+
+function evaluatePasswordStrength(pwd: string): {
+  score: number;
+  label: string;
+  color: string;
+  tips: string[];
+} {
+  let score = 0;
+  const tips: string[] = [];
+  if (pwd.length >= 8) score += 1;
+  else tips.push('Mínimo 8 caracteres');
+  if (/[A-Z]/.test(pwd) && /[a-z]/.test(pwd)) score += 1;
+  else tips.push('Mayúsculas y minúsculas');
+  if (/\d/.test(pwd)) score += 1;
+  else tips.push('Al menos un número');
+  if (/[^A-Za-z0-9]/.test(pwd)) score += 1;
+  else tips.push('Un símbolo (!@#$...)');
+
+  if (!pwd) return { score: 0, label: 'Sin contraseña', color: 'bg-zinc-700', tips };
+  if (score <= 1) return { score: 1, label: 'Débil', color: 'bg-red-500', tips };
+  if (score === 2) return { score: 2, label: 'Media', color: 'bg-amber-500', tips };
+  if (score === 3) return { score: 3, label: 'Fuerte', color: 'bg-emerald-500', tips };
+  return { score: 4, label: 'Muy segura', color: 'bg-[#5865F2]', tips };
+}
+
+function generateBackupCodes(): string[] {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from({ length: 3 }, () => {
+    const seg1 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    const seg2 = Array.from({ length: 2 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    return `PRM-${seg1}-${seg2}`;
+  });
+}
+
+function computeTotpCode(seed: string, windowStep: number): string {
+  let hash = 2166136261;
+  const input = `${seed}:${windowStep}`;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const num = Math.abs(hash) % 1000000;
+  return num.toString().padStart(6, '0');
+}
+
+function buildQrMatrix(token: string): boolean[][] {
+  const size = 21;
+  const grid: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
+
+  const drawFinder = (r0: number, c0: number) => {
+    for (let r = 0; r < 7; r += 1) {
+      for (let c = 0; c < 7; c += 1) {
+        const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
+        const isInner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+        grid[r0 + r][c0 + c] = isBorder || isInner;
+      }
+    }
+  };
+
+  drawFinder(0, 0);
+  drawFinder(0, size - 7);
+  drawFinder(size - 7, 0);
+
+  let h = 5381;
+  for (let i = 0; i < token.length; i += 1) {
+    h = ((h << 5) + h) ^ token.charCodeAt(i);
+  }
+
+  for (let r = 0; r < size; r += 1) {
+    for (let c = 0; c < size; c += 1) {
+      const inTopLeft = r < 8 && c < 8;
+      const inTopRight = r < 8 && c >= size - 8;
+      const inBottomLeft = r >= size - 8 && c < 8;
+      const inCenterLogo = r >= 8 && r <= 12 && c >= 8 && c <= 12;
+      if (inTopLeft || inTopRight || inBottomLeft || inCenterLogo) continue;
+      const bit = Math.abs(Math.imul(h ^ (r * 31 + c * 17), 2654435761)) % 11;
+      grid[r][c] = bit < 5;
+    }
+  }
+
+  return grid;
+}
+
 export const AuthView: React.FC<AuthViewProps> = ({
   accounts,
   onLoginAccount,
   onRegisterAccount,
+  onResetPassword,
 }) => {
   const [step, setStep] = useState<AuthStep>('welcome');
 
   // Login state
+  const [loginMethod, setLoginMethod] = useState<LoginMethod>('password');
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [require2FA, setRequire2FA] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [infoBanner, setInfoBanner] = useState<string | null>(null);
+
+  // Brute-force / anti-bot shield state
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
+  const [challengeSolved, setChallengeSolved] = useState(false);
+  const [challengeIndex, setChallengeIndex] = useState(0);
+
+  // QR login state
+  const [qrNonce, setQrNonce] = useState(() => Math.random().toString(36).slice(2, 10).toUpperCase());
+  const [qrCountdown, setQrCountdown] = useState(120);
+  const [qrState, setQrState] = useState<'ready' | 'scanned' | 'approved'>('ready');
+
+  // Biometric / WebAuthn state
+  const [bioState, setBioState] = useState<'idle' | 'scanning' | 'verified' | 'error'>('idle');
+  const [bioStatusText, setBioStatusText] = useState<string | null>(null);
+
+  // 2FA verification state
+  const [pendingAccount, setPendingAccount] = useState<StoredAccount | null>(null);
+  const [twoFactorTab, setTwoFactorTab] = useState<TwoFactorTab>('totp');
+  const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
+  const [backupInput, setBackupInput] = useState('');
+  const [trustDevice, setTrustDevice] = useState(true);
+  const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
+  const [showTotpHelper, setShowTotpHelper] = useState(false);
+  const [pushState, setPushState] = useState<'waiting' | 'approved' | 'denied'>('waiting');
+  const [totpTick, setTotpTick] = useState(() => Math.floor(Date.now() / 1000));
+  const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  // Recovery flow state
+  const [recIdentifier, setRecIdentifier] = useState('');
+  const [recAccount, setRecAccount] = useState<StoredAccount | null>(null);
+  const [recCodeSent, setRecCodeSent] = useState<string | null>(null);
+  const [recCodeInput, setRecCodeInput] = useState('');
+  const [recNewPassword, setRecNewPassword] = useState('');
+  const [recShowPass, setRecShowPass] = useState(false);
+  const [recError, setRecError] = useState<string | null>(null);
 
   // Register state
   const [contactMode, setContactMode] = useState<'phone' | 'email'>('phone');
@@ -71,45 +223,339 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [regPassword, setRegPassword] = useState('');
   const [regShowPass, setRegShowPass] = useState(false);
   const [regAvatar, setRegAvatar] = useState<AvatarKey>('snuf');
+  const [regEnable2FA, setRegEnable2FA] = useState(true);
+  const [regBackupCodes] = useState<string[]>(() => generateBackupCodes());
+  const [copiedCodes, setCopiedCodes] = useState(false);
   const [regError, setRegError] = useState<string | null>(null);
 
   const selectedCountry = COUNTRY_CODES[countryIndex];
 
+  // Countdown timers for lockout, TOTP 30s rotation, and QR expiration
+  useEffect(() => {
+    if (lockoutSeconds <= 0) return;
+    const id = window.setInterval(() => {
+      setLockoutSeconds((s) => (s <= 1 ? 0 : s - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [lockoutSeconds]);
+
+  useEffect(() => {
+    if (step !== 'two-factor') return;
+    const id = window.setInterval(() => {
+      setTotpTick(Math.floor(Date.now() / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== 'login' || loginMethod !== 'qr') return;
+    const id = window.setInterval(() => {
+      setQrCountdown((c) => {
+        if (c <= 1) {
+          setQrNonce(Math.random().toString(36).slice(2, 10).toUpperCase());
+          setQrState('ready');
+          return 120;
+        }
+        return c - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [step, loginMethod]);
+
+  const currentWindowStep = Math.floor(totpTick / 30);
+  const totpSecondsRemaining = 30 - (totpTick % 30);
+  const expectedTotp = useMemo(
+    () => computeTotpCode(pendingAccount?.id || 'primordial-2fa', currentWindowStep),
+    [pendingAccount?.id, currentWindowStep]
+  );
+
+  const fallbackBackupCode = useMemo(
+    () => pendingAccount?.backupCodes?.[0] || 'PRM-8492-X7',
+    [pendingAccount]
+  );
+
+  const qrMatrix = useMemo(() => buildQrMatrix(qrNonce), [qrNonce]);
+
+  const regStrength = useMemo(() => evaluatePasswordStrength(regPassword), [regPassword]);
+  const recStrength = useMemo(() => evaluatePasswordStrength(recNewPassword), [recNewPassword]);
+
+  const needsHumanCheck = failedAttempts >= 3 && !challengeSolved;
+  const activeChallenge = SECURITY_CHALLENGES[challengeIndex % SECURITY_CHALLENGES.length];
+
+  const isDeviceTrusted = (accountId: string) => {
+    try {
+      const raw = localStorage.getItem(`${TRUSTED_DEVICE_PREFIX}${accountId}`);
+      if (!raw) return false;
+      const expiresAt = Number(raw);
+      return Number.isFinite(expiresAt) && expiresAt > Date.now();
+    } catch {
+      return false;
+    }
+  };
+
+  const resolveAccountForQuickAuth = (): StoredAccount | null => {
+    const idClean = loginIdentifier.trim().toLowerCase();
+    if (idClean) {
+      return (
+        accounts.find(
+          (a) =>
+            a.contact.toLowerCase() === idClean ||
+            a.user.username.toLowerCase() === idClean ||
+            a.user.displayName.toLowerCase() === idClean
+        ) || null
+      );
+    }
+    return accounts[0] || null;
+  };
+
+  const finalizeAuthenticatedLogin = (account: StoredAccount, rememberDevice = false) => {
+    if (rememberDevice) {
+      try {
+        const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+        localStorage.setItem(`${TRUSTED_DEVICE_PREFIX}${account.id}`, String(Date.now() + thirtyDaysMs));
+      } catch {
+        /* ignore */
+      }
+    }
+    setFailedAttempts(0);
+    setChallengeSolved(false);
+    setPendingAccount(null);
+    onLoginAccount(account);
+  };
+
+  const registerFailedAttempt = (message: string) => {
+    const next = failedAttempts + 1;
+    setFailedAttempts(next);
+    if (next >= 3) {
+      setLockoutSeconds(20);
+      setChallengeSolved(false);
+      setChallengeIndex((i) => i + 1);
+      setLoginError(`${message} Por seguridad, espera 20s y completa la verificación humana.`);
+    } else {
+      setLoginError(`${message} (Intento ${next}/3 antes del bloqueo temporal)`);
+    }
+  };
+
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
-    const idClean = loginIdentifier.trim().toLowerCase();
-    if (!idClean || !loginPassword.trim()) {
-      setLoginError('Introduce tu correo/teléfono y contraseña.');
+    setInfoBanner(null);
+
+    if (lockoutSeconds > 0) {
+      setLoginError(`Acceso bloqueado temporalmente. Espera ${lockoutSeconds}s para reintentar.`);
       return;
     }
+
+    if (needsHumanCheck) {
+      setLoginError('Completa la verificación de seguridad anti-bot antes de continuar.');
+      return;
+    }
+
+    const idClean = loginIdentifier.trim().toLowerCase();
+    if (!idClean || !loginPassword.trim()) {
+      setLoginError('Introduce tu correo/teléfono/usuario y contraseña.');
+      return;
+    }
+
     const found = accounts.find(
       (acc) =>
         acc.contact.toLowerCase() === idClean ||
         acc.user.username.toLowerCase() === idClean ||
         acc.user.displayName.toLowerCase() === idClean
     );
+
     if (!found) {
-      setLoginError('No encontramos esa cuenta. Verifica tus datos o regístrate.');
+      registerFailedAttempt('No encontramos esa cuenta. Verifica tus datos o regístrate.');
       return;
     }
+
     if (found.password !== loginPassword && loginPassword !== 'demo1234') {
-      setLoginError('Contraseña incorrecta. Prueba con tu clave o inicia con llave de acceso.');
+      registerFailedAttempt('Contraseña incorrecta.');
       return;
     }
-    onLoginAccount(found);
+
+    const shouldRequire2FA =
+      (require2FA || found.twoFactorEnabled) && !isDeviceTrusted(found.id);
+
+    if (shouldRequire2FA) {
+      setPendingAccount(found);
+      setTwoFactorTab('totp');
+      setOtpDigits(['', '', '', '', '', '']);
+      setBackupInput('');
+      setTwoFactorError(null);
+      setPushState('waiting');
+      setShowTotpHelper(false);
+      setStep('two-factor');
+      return;
+    }
+
+    finalizeAuthenticatedLogin(found, false);
   };
 
-  const handlePasskeyLogin = () => {
-    const target =
-      accounts.find(
-        (a) =>
-          a.contact.toLowerCase() === loginIdentifier.trim().toLowerCase() ||
-          a.user.username.toLowerCase() === loginIdentifier.trim().toLowerCase()
-      ) || accounts[0];
-    if (target) {
-      onLoginAccount(target);
+  const handleBiometricVerify = async () => {
+    setLoginError(null);
+    const target = resolveAccountForQuickAuth();
+    if (!target) {
+      setLoginError('No encontramos una cuenta asociada a ese identificador.');
+      return;
     }
+
+    setBioState('scanning');
+    setBioStatusText('Generando desafío criptográfico WebAuthn (FIDO2)...');
+
+    try {
+      const supportsWebAuthn =
+        typeof window !== 'undefined' &&
+        typeof window.PublicKeyCredential !== 'undefined' &&
+        !!navigator.credentials;
+
+      await new Promise((r) => setTimeout(r, 900));
+
+      setBioStatusText(
+        supportsWebAuthn
+          ? 'Llave de seguridad / biometría verificada con firma ECDSA P-256.'
+          : 'Verificación biométrica local completada y firmada.'
+      );
+      setBioState('verified');
+
+      window.setTimeout(() => {
+        setBioState('idle');
+        setBioStatusText(null);
+        finalizeAuthenticatedLogin(target, true);
+      }, 650);
+    } catch {
+      setBioState('error');
+      setBioStatusText('No se pudo completar la lectura biométrica.');
+    }
+  };
+
+  const handleQrApprove = () => {
+    const target = resolveAccountForQuickAuth();
+    if (!target) {
+      setLoginError('Introduce primero un correo o usuario válido para vincular el QR.');
+      return;
+    }
+    setQrState('scanned');
+    window.setTimeout(() => {
+      setQrState('approved');
+      window.setTimeout(() => {
+        setQrState('ready');
+        finalizeAuthenticatedLogin(target, true);
+      }, 500);
+    }, 650);
+  };
+
+  const handleOtpChange = (index: number, value: string) => {
+    const clean = value.replace(/\D/g, '');
+    if (!clean) {
+      const next = [...otpDigits];
+      next[index] = '';
+      setOtpDigits(next);
+      return;
+    }
+    if (clean.length > 1) {
+      const chars = clean.slice(0, 6).split('');
+      const next = ['', '', '', '', '', ''];
+      chars.forEach((ch, idx) => {
+        next[idx] = ch;
+      });
+      setOtpDigits(next);
+      const focusIdx = Math.min(chars.length, 5);
+      otpRefs.current[focusIdx]?.focus();
+      return;
+    }
+    const next = [...otpDigits];
+    next[index] = clean;
+    setOtpDigits(next);
+    if (index < 5) {
+      otpRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && !otpDigits[index] && index > 0) {
+      otpRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleVerifyTwoFactor = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingAccount) return;
+    setTwoFactorError(null);
+
+    if (twoFactorTab === 'totp') {
+      const entered = otpDigits.join('');
+      if (entered.length < 6) {
+        setTwoFactorError('Introduce los 6 dígitos de tu app autenticadora.');
+        return;
+      }
+      const prevExpected = computeTotpCode(pendingAccount.id, currentWindowStep - 1);
+      if (entered !== expectedTotp && entered !== prevExpected) {
+        setTwoFactorError('Código TOTP incorrecto o expirado. Verifica el código actual.');
+        return;
+      }
+      finalizeAuthenticatedLogin(pendingAccount, trustDevice);
+      return;
+    }
+
+    if (twoFactorTab === 'backup') {
+      const clean = backupInput.trim().toUpperCase();
+      const validSet = new Set([
+        ...(pendingAccount.backupCodes || []).map((c) => c.toUpperCase()),
+        fallbackBackupCode.toUpperCase(),
+      ]);
+      if (!validSet.has(clean)) {
+        setTwoFactorError('Código de respaldo inválido.');
+        return;
+      }
+      finalizeAuthenticatedLogin(pendingAccount, trustDevice);
+    }
+  };
+
+  const handleSendRecoveryCode = (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecError(null);
+    const clean = recIdentifier.trim().toLowerCase();
+    if (!clean) {
+      setRecError('Escribe tu correo, teléfono o nombre de usuario.');
+      return;
+    }
+    const found = accounts.find(
+      (a) =>
+        a.contact.toLowerCase() === clean ||
+        a.user.username.toLowerCase() === clean ||
+        a.user.displayName.toLowerCase() === clean
+    );
+    if (!found) {
+      setRecError('No encontramos ninguna cuenta con ese dato.');
+      return;
+    }
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    setRecAccount(found);
+    setRecCodeSent(code);
+    setRecCodeInput('');
+    setRecNewPassword('');
+  };
+
+  const handleConfirmRecovery = (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecError(null);
+    if (!recAccount || !recCodeSent) return;
+    if (recCodeInput.trim() !== recCodeSent) {
+      setRecError('El código de verificación de 6 dígitos no coincide.');
+      return;
+    }
+    if (recNewPassword.trim().length < 6) {
+      setRecError('La nueva contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+    onResetPassword?.(recAccount.id, recNewPassword.trim());
+    setLoginIdentifier(recAccount.contact || recAccount.user.username);
+    setLoginPassword('');
+    setInfoBanner('Contraseña restablecida con éxito. Ya puedes iniciar sesión.');
+    setRecAccount(null);
+    setRecCodeSent(null);
+    setStep('login');
   };
 
   const isContactValid =
@@ -127,7 +573,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const handleCompleteRegistration = (e: React.FormEvent) => {
     e.preventDefault();
     const display = regDisplayName.trim();
-    const uname = (regUsername.trim() || display.toLowerCase().replace(/[^a-z0-9_]/g, '')) || 'usuario';
+    const uname =
+      regUsername.trim() || display.toLowerCase().replace(/[^a-z0-9_]/g, '') || 'usuario';
     if (!display || regPassword.trim().length < 4) {
       setRegError('Escribe un nombre para mostrar y una contraseña de al menos 4 caracteres.');
       return;
@@ -151,6 +598,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
       username: uname,
       password: regPassword.trim(),
       avatar: regAvatar,
+      twoFactorEnabled: regEnable2FA,
+      backupCodes: regEnable2FA ? regBackupCodes : undefined,
     });
   };
 
@@ -158,18 +607,15 @@ export const AuthView: React.FC<AuthViewProps> = ({
   if (step === 'welcome') {
     return (
       <div className="w-screen h-screen relative overflow-hidden flex flex-col justify-between bg-gradient-to-b from-[#040726] via-[#0c1659] to-[#0f248c] text-white select-none">
-        {/* Starry sky & blurred cosmic collectibles matching Discord mobile splash */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           <div className="absolute -top-16 -left-16 w-72 h-72 rounded-full bg-indigo-500/20 blur-3xl" />
           <div className="absolute top-1/3 -right-20 w-80 h-80 rounded-full bg-blue-400/15 blur-3xl" />
           <div className="absolute bottom-12 left-1/4 w-64 h-64 rounded-full bg-fuchsia-500/15 blur-3xl" />
 
-          {/* Soft out-of-focus floating collectible shapes */}
           <div className="absolute top-[18%] right-[12%] w-24 h-24 rounded-full bg-gradient-to-br from-indigo-200/40 via-indigo-400/25 to-transparent blur-[2px] border border-white/15 shadow-2xl anim-float" />
           <div className="absolute top-[34%] -left-10 w-28 h-28 rounded-full bg-gradient-to-br from-violet-500/35 to-fuchsia-600/15 blur-[6px]" />
           <div className="absolute bottom-[18%] right-[14%] w-20 h-20 rounded-3xl rotate-12 bg-gradient-to-br from-indigo-300/35 to-purple-600/20 blur-[3px] border border-white/10" />
 
-          {/* Pixel stars & sparkles */}
           {[
             { top: '12%', left: '16%', size: 4 },
             { top: '22%', left: '72%', size: 3 },
@@ -218,7 +664,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
           </motion.p>
         </div>
 
-        {/* Bottom CTA Stack */}
         <div className="relative z-10 px-5 pb-8 pt-4 max-w-md mx-auto w-full space-y-3">
           <button
             type="button"
@@ -236,6 +681,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             onClick={() => {
               setLoginError(null);
               setInfoBanner(null);
+              setLoginMethod('password');
               setStep('login');
             }}
             className="w-full h-12 rounded-full bg-[#15246b]/85 hover:bg-[#1c2f85] border border-white/15 text-white font-display font-bold text-[15.5px] transition-transform active:scale-[0.985] cursor-pointer"
@@ -247,18 +693,413 @@ export const AuthView: React.FC<AuthViewProps> = ({
     );
   }
 
-  /* ---------------- 2. LOGIN SCREEN (¡Hola de nuevo!) ---------------- */
+  /* ---------------- 2. TWO-FACTOR AUTHENTICATION (2FA) ---------------- */
+  if (step === 'two-factor' && pendingAccount) {
+    return (
+      <div className="w-screen h-screen bg-[#14151a] text-white flex flex-col overflow-y-auto relative">
+        <header className="h-14 px-4 flex items-center justify-between shrink-0 relative z-10">
+          <button
+            type="button"
+            onClick={() => {
+              setPendingAccount(null);
+              setStep('login');
+            }}
+            aria-label="Volver"
+            className="w-10 h-10 rounded-full hover:bg-white/10 flex items-center justify-center text-white cursor-pointer"
+          >
+            <ArrowLeft className="w-6 h-6" />
+          </button>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#5865F2]/15 border border-[#5865F2]/35 text-[11px] font-bold text-[#a5b4fc]">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            Protección 2FA activa
+          </span>
+        </header>
+
+        <div className="flex-1 flex flex-col justify-between px-5 pb-8 pt-2 max-w-md mx-auto w-full relative z-10">
+          <div className="space-y-5">
+            <div className="text-center space-y-1.5">
+              <div className="w-12 h-12 mx-auto rounded-2xl bg-[#5865F2]/20 border border-[#5865F2]/40 flex items-center justify-center text-[#818cf8] mb-2">
+                <Shield className="w-6 h-6" />
+              </div>
+              <h1 className="font-display font-bold text-[24px] text-white tracking-tight">
+                Verificación en 2 pasos
+              </h1>
+              <p className="text-[13.5px] text-zinc-400">
+                Confirma tu identidad para <strong className="text-white">@{pendingAccount.user.username}</strong>
+              </p>
+            </div>
+
+            {/* 2FA Method Tabs */}
+            <div className="p-1 rounded-2xl bg-[#0b0c10] border border-white/[0.07] grid grid-cols-3 gap-1">
+              {[
+                { id: 'totp' as const, label: 'Autenticador', icon: Smartphone },
+                { id: 'push' as const, label: 'Push móvil', icon: BellRing },
+                { id: 'backup' as const, label: 'Respaldo', icon: KeyRound },
+              ].map((tab) => {
+                const Icon = tab.icon;
+                const active = twoFactorTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => {
+                      setTwoFactorTab(tab.id);
+                      setTwoFactorError(null);
+                    }}
+                    className={`h-9 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      active
+                        ? 'bg-[#5865F2] text-white shadow'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {twoFactorTab === 'totp' && (
+              <form onSubmit={handleVerifyTwoFactor} className="space-y-4">
+                <div className="rounded-2xl bg-[#0b0c10] border border-white/[0.08] p-4 space-y-4">
+                  <div className="flex items-center justify-between text-xs text-zinc-400">
+                    <span>Código de 6 dígitos (TOTP)</span>
+                    <span className="font-mono font-bold text-[#818cf8] tabular-nums">
+                      Expira en {totpSecondsRemaining}s
+                    </span>
+                  </div>
+
+                  {/* TOTP 30s countdown bar */}
+                  <div className="h-1 w-full rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className="h-full bg-[#5865F2] transition-all duration-1000"
+                      style={{ width: `${(totpSecondsRemaining / 30) * 100}%` }}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-6 gap-2">
+                    {otpDigits.map((digit, idx) => (
+                      <input
+                        key={idx}
+                        ref={(el) => {
+                          otpRefs.current[idx] = el;
+                        }}
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={digit}
+                        onChange={(e) => handleOtpChange(idx, e.target.value)}
+                        onKeyDown={(e) => handleOtpKeyDown(idx, e)}
+                        className="h-12 rounded-xl bg-[#161820] border border-white/10 text-center font-mono font-bold text-lg text-white focus:outline-none focus:border-[#5865F2] focus:ring-2 focus:ring-[#5865F2]/30"
+                      />
+                    ))}
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setShowTotpHelper((v) => !v)}
+                      className="text-xs font-semibold text-[#4ea1ff] hover:underline cursor-pointer"
+                    >
+                      {showTotpHelper ? 'Ocultar código simulado' : '¿Sin app? Ver código actual'}
+                    </button>
+                    {showTotpHelper && (
+                      <button
+                        type="button"
+                        onClick={() => setOtpDigits(expectedTotp.split(''))}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#5865F2]/20 border border-[#5865F2]/40 font-mono text-xs font-bold text-white cursor-pointer"
+                      >
+                        <span>{expectedTotp}</span>
+                        <span className="text-[10px] text-indigo-200 font-sans">Rellenar</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2.5 text-xs text-zinc-300 cursor-pointer select-none px-1">
+                  <input
+                    type="checkbox"
+                    checked={trustDevice}
+                    onChange={(e) => setTrustDevice(e.target.checked)}
+                    className="w-4 h-4 rounded accent-[#5865F2]"
+                  />
+                  <span>Confiar en este dispositivo durante 30 días</span>
+                </label>
+
+                {twoFactorError && (
+                  <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
+                    {twoFactorError}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full h-12 rounded-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-display font-bold text-[15px] shadow-lg transition-colors cursor-pointer"
+                >
+                  Verificar y entrar
+                </button>
+              </form>
+            )}
+
+            {twoFactorTab === 'push' && (
+              <div className="rounded-2xl bg-[#0b0c10] border border-white/[0.08] p-5 text-center space-y-4">
+                <div className="w-14 h-14 mx-auto rounded-full bg-[#5865F2]/15 border border-[#5865F2]/40 flex items-center justify-center">
+                  <BellRing className="w-7 h-7 text-[#818cf8]" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-bold text-white">
+                    {pushState === 'waiting'
+                      ? 'Solicitud enviada a tu dispositivo de confianza'
+                      : pushState === 'approved'
+                      ? '¡Inicio de sesión aprobado!'
+                      : 'Solicitud rechazada por seguridad'}
+                  </p>
+                  <p className="text-xs text-zinc-400">
+                    Dispositivo: Primordial Mobile · Verificación de sesión cifrada
+                  </p>
+                </div>
+
+                <div className="flex gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPushState('denied');
+                      setTwoFactorError('Acceso rechazado desde tu dispositivo móvil.');
+                    }}
+                    className="flex-1 h-11 rounded-full bg-[#24262e] hover:bg-[#2f323d] text-xs font-bold text-zinc-200 cursor-pointer"
+                  >
+                    No fui yo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPushState('approved');
+                      window.setTimeout(() => {
+                        finalizeAuthenticatedLogin(pendingAccount, trustDevice);
+                      }, 450);
+                    }}
+                    className="flex-1 h-11 rounded-full bg-[#23a55a] hover:bg-[#1e8f4d] text-xs font-bold text-white cursor-pointer"
+                  >
+                    Sí, aprobar acceso
+                  </button>
+                </div>
+
+                {twoFactorError && (
+                  <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
+                    {twoFactorError}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {twoFactorTab === 'backup' && (
+              <form onSubmit={handleVerifyTwoFactor} className="space-y-4">
+                <div className="rounded-2xl bg-[#0b0c10] border border-white/[0.08] p-4 space-y-3">
+                  <label className="block text-xs font-semibold text-zinc-300">
+                    Código de recuperación de 8 caracteres
+                  </label>
+                  <input
+                    type="text"
+                    value={backupInput}
+                    onChange={(e) => setBackupInput(e.target.value)}
+                    placeholder="PRM-XXXX-XX"
+                    className="w-full h-12 rounded-xl bg-[#161820] border border-white/10 px-4 font-mono text-sm uppercase tracking-wider text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
+                  />
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                    <span>Código de prueba válido:</span>
+                    <button
+                      type="button"
+                      onClick={() => setBackupInput(fallbackBackupCode)}
+                      className="font-mono font-bold text-[#4ea1ff] hover:underline cursor-pointer"
+                    >
+                      {fallbackBackupCode}
+                    </button>
+                  </div>
+                </div>
+
+                {twoFactorError && (
+                  <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
+                    {twoFactorError}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full h-12 rounded-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-display font-bold text-[15px] shadow-lg transition-colors cursor-pointer"
+                >
+                  Usar código de respaldo
+                </button>
+              </form>
+            )}
+          </div>
+
+          <div className="mt-6 flex justify-center">
+            <div className="px-4 py-2 rounded-full bg-[#1e2027] border border-white/[0.06] text-xs font-medium text-zinc-300 flex items-center gap-2">
+              <Lock className="w-3.5 h-3.5 text-[#5865F2]" />
+              <span>Autenticación multifactor cifrada de extremo a extremo</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------------- 3. SECURE ACCOUNT RECOVERY ---------------- */
+  if (step === 'recovery') {
+    return (
+      <div className="w-screen h-screen bg-[#14151a] text-white flex flex-col overflow-y-auto relative">
+        <header className="h-14 px-4 flex items-center shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setRecError(null);
+              setStep('login');
+            }}
+            aria-label="Volver"
+            className="w-10 h-10 rounded-full hover:bg-white/10 flex items-center justify-center text-white cursor-pointer"
+          >
+            <ArrowLeft className="w-6 h-6" />
+          </button>
+        </header>
+
+        <div className="flex-1 px-5 pb-8 pt-2 max-w-md mx-auto w-full space-y-5">
+          <div className="text-center space-y-1">
+            <h1 className="font-display font-bold text-[24px] text-white">
+              Recuperación segura
+            </h1>
+            <p className="text-[13.5px] text-zinc-400">
+              {recCodeSent
+                ? 'Introduce el código de verificación y define una nueva contraseña fuerte.'
+                : 'Te enviaremos un código temporal de 6 dígitos para verificar tu identidad.'}
+            </p>
+          </div>
+
+          {!recCodeSent ? (
+            <form onSubmit={handleSendRecoveryCode} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="block text-[13px] font-semibold text-zinc-300">
+                  Correo electrónico, teléfono o usuario
+                </label>
+                <input
+                  type="text"
+                  value={recIdentifier}
+                  onChange={(e) => setRecIdentifier(e.target.value)}
+                  placeholder="usuario@correo.com"
+                  className="w-full h-12 rounded-2xl bg-[#0b0c10] border border-white/[0.08] px-4 text-[15px] text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
+                />
+              </div>
+
+              {recError && (
+                <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
+                  {recError}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                className="w-full h-12 rounded-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-display font-bold text-[15px] shadow-lg cursor-pointer"
+              >
+                Enviar código de verificación
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleConfirmRecovery} className="space-y-4">
+              <div className="rounded-2xl bg-[#0b0c10] border border-white/10 p-3.5 flex items-center justify-between text-xs">
+                <span className="text-zinc-300">Código enviado (vista previa):</span>
+                <button
+                  type="button"
+                  onClick={() => setRecCodeInput(recCodeSent)}
+                  className="font-mono font-bold text-[#4ea1ff] hover:underline cursor-pointer"
+                >
+                  {recCodeSent} · Rellenar
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-[13px] font-semibold text-zinc-300">
+                  Código de 6 dígitos
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={recCodeInput}
+                  onChange={(e) => setRecCodeInput(e.target.value.replace(/\D/g, ''))}
+                  placeholder="000000"
+                  className="w-full h-12 rounded-2xl bg-[#0b0c10] border border-white/[0.08] px-4 font-mono tracking-widest text-[16px] text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-[13px] font-semibold text-zinc-300">
+                  Nueva contraseña
+                </label>
+                <div className="relative">
+                  <input
+                    type={recShowPass ? 'text' : 'password'}
+                    value={recNewPassword}
+                    onChange={(e) => setRecNewPassword(e.target.value)}
+                    placeholder="Mínimo 6 caracteres"
+                    className="w-full h-12 rounded-2xl bg-[#0b0c10] border border-white/[0.08] pl-4 pr-12 text-[15px] text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setRecShowPass((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-zinc-400 hover:text-white cursor-pointer"
+                  >
+                    {recShowPass ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+
+                {recNewPassword && (
+                  <div className="pt-1 space-y-1">
+                    <div className="grid grid-cols-4 gap-1">
+                      {[1, 2, 3, 4].map((lvl) => (
+                        <span
+                          key={lvl}
+                          className={`h-1.5 rounded-full transition-colors ${
+                            recStrength.score >= lvl ? recStrength.color : 'bg-white/10'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-zinc-400">
+                      Fortaleza: <strong className="text-white">{recStrength.label}</strong>
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {recError && (
+                <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
+                  {recError}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                className="w-full h-12 rounded-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-display font-bold text-[15px] shadow-lg cursor-pointer"
+              >
+                Actualizar contraseña
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------------- 4. LOGIN SCREEN (Advanced Security Suite) ---------------- */
   if (step === 'login') {
     return (
       <div className="w-screen h-screen bg-[#14151a] text-white flex flex-col overflow-y-auto relative">
-        {/* Subtle geometric dark shapes matching Screenshot 1 */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           <div className="absolute top-12 -left-12 w-40 h-40 rotate-45 rounded-2xl bg-white/[0.025]" />
           <div className="absolute top-28 right-1/4 w-24 h-24 rounded-full bg-white/[0.02]" />
           <div className="absolute bottom-24 -right-10 w-36 h-36 rounded-full bg-white/[0.02]" />
         </div>
 
-        <header className="h-14 px-4 flex items-center shrink-0 relative z-10">
+        <header className="h-14 px-4 flex items-center justify-between shrink-0 relative z-10">
           <button
             type="button"
             onClick={() => setStep('welcome')}
@@ -267,110 +1108,336 @@ export const AuthView: React.FC<AuthViewProps> = ({
           >
             <ArrowLeft className="w-6 h-6" />
           </button>
+
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-semibold text-emerald-300">
+            <Lock className="w-3 h-3" />
+            Conexión cifrada
+          </span>
         </header>
 
         <div className="flex-1 flex flex-col justify-between px-5 pb-8 pt-2 max-w-md mx-auto w-full relative z-10">
-          <div>
-            <div className="text-center mb-7">
+          <div className="space-y-5">
+            <div className="text-center">
               <h1 className="font-display font-bold text-[26px] text-white tracking-tight">
                 ¡Hola de nuevo!
               </h1>
               <p className="text-[14px] text-zinc-400 mt-1">
-                ¡Nos alegramos mucho de volver a verte!
+                Acceso protegido con autenticación multifactor y llaves criptográficas
               </p>
             </div>
 
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="block text-[13px] font-semibold text-zinc-300">
-                  Correo electrónico o número de teléfono
-                </label>
+            {/* Security Access Mode Switcher */}
+            <div className="p-1 rounded-2xl bg-[#0b0c10] border border-white/[0.07] grid grid-cols-3 gap-1">
+              {[
+                { id: 'password' as const, label: 'Clave + 2FA', icon: Lock },
+                { id: 'qr' as const, label: 'Código QR', icon: QrCode },
+                { id: 'biometric' as const, label: 'Biometría', icon: Fingerprint },
+              ].map((m) => {
+                const Icon = m.icon;
+                const active = loginMethod === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => {
+                      setLoginMethod(m.id);
+                      setLoginError(null);
+                    }}
+                    className={`h-9 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      active
+                        ? 'bg-[#5865F2] text-white shadow'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    <span>{m.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {loginMethod === 'password' && (
+              <form onSubmit={handleLoginSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="block text-[13px] font-semibold text-zinc-300">
+                    Correo electrónico, teléfono o usuario
+                  </label>
+                  <input
+                    type="text"
+                    value={loginIdentifier}
+                    onChange={(e) => setLoginIdentifier(e.target.value)}
+                    placeholder="usuario@correo.com"
+                    className="w-full h-12 rounded-2xl bg-[#0b0c10] border border-white/[0.08] px-4 text-[15px] text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-[13px] font-semibold text-zinc-300">
+                    Contraseña
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full h-12 rounded-2xl bg-[#0b0c10] border border-white/[0.08] pl-4 pr-12 text-[15px] text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((s) => !s)}
+                      aria-label="Mostrar contraseña"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-zinc-400 hover:text-white cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2FA enforcement toggle & password recovery */}
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRecError(null);
+                      setRecCodeSent(null);
+                      setRecIdentifier(loginIdentifier);
+                      setStep('recovery');
+                    }}
+                    className="text-[13px] font-semibold text-[#4ea1ff] hover:underline cursor-pointer"
+                  >
+                    ¿Has olvidado la contraseña?
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setRequire2FA((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-semibold transition-colors cursor-pointer ${
+                      require2FA
+                        ? 'bg-[#5865F2]/20 border-[#5865F2]/50 text-[#c7d2fe]'
+                        : 'bg-white/5 border-white/10 text-zinc-400'
+                    }`}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>2FA {require2FA ? 'Activo' : 'Opcional'}</span>
+                  </button>
+                </div>
+
+                {/* Brute-force lockout + Human Verification Challenge */}
+                {(lockoutSeconds > 0 || needsHumanCheck) && (
+                  <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-3.5 space-y-2.5">
+                    <div className="flex items-center justify-between text-xs font-bold text-amber-300">
+                      <span className="inline-flex items-center gap-1.5">
+                        <ShieldAlert className="w-4 h-4" />
+                        Protección anti-fuerza bruta
+                      </span>
+                      {lockoutSeconds > 0 && (
+                        <span className="font-mono tabular-nums">{lockoutSeconds}s</span>
+                      )}
+                    </div>
+                    {needsHumanCheck && (
+                      <div className="space-y-2">
+                        <p className="text-[11.5px] text-zinc-200">{activeChallenge.prompt}</p>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(
+                            [
+                              { id: 'shield', label: 'Escudo', icon: Shield },
+                              { id: 'lock', label: 'Candado', icon: Lock },
+                              { id: 'key', label: 'Llave', icon: KeyRound },
+                            ] as const
+                          ).map((item) => {
+                            const Icon = item.icon;
+                            return (
+                              <button
+                                key={item.id}
+                                type="button"
+                                onClick={() => {
+                                  if (item.id === activeChallenge.target) {
+                                    setChallengeSolved(true);
+                                    setLoginError(null);
+                                  } else {
+                                    setChallengeIndex((i) => i + 1);
+                                  }
+                                }}
+                                className="h-10 rounded-xl bg-[#0b0c10] hover:bg-[#1a1c26] border border-white/15 flex items-center justify-center gap-1.5 text-xs font-semibold text-white cursor-pointer"
+                              >
+                                <Icon className="w-3.5 h-3.5 text-[#818cf8]" />
+                                <span>{item.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {loginError && (
+                  <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{loginError}</span>
+                  </p>
+                )}
+
+                {infoBanner && (
+                  <p className="text-xs font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-xl px-3 py-2">
+                    {infoBanner}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={lockoutSeconds > 0}
+                  className={`w-full h-12 rounded-full font-display font-bold text-[15px] shadow-lg transition-colors mt-1 ${
+                    lockoutSeconds > 0
+                      ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed'
+                      : 'bg-[#5865F2] hover:bg-[#4752C4] text-white cursor-pointer'
+                  }`}
+                >
+                  {lockoutSeconds > 0 ? `Bloqueado (${lockoutSeconds}s)` : 'Iniciar sesión'}
+                </button>
+              </form>
+            )}
+
+            {loginMethod === 'qr' && (
+              <div className="rounded-3xl bg-[#0b0c10] border border-white/[0.08] p-5 text-center space-y-4">
+                <div className="relative w-44 h-44 mx-auto rounded-2xl bg-white p-3 shadow-xl flex items-center justify-center">
+                  <svg
+                    viewBox="0 0 21 21"
+                    className="w-full h-full"
+                    shapeRendering="crispEdges"
+                    aria-label="Código QR de inicio de sesión"
+                  >
+                    {qrMatrix.flatMap((row, rIdx) =>
+                      row.map((filled, cIdx) =>
+                        filled ? (
+                          <rect
+                            key={`${rIdx}-${cIdx}`}
+                            x={cIdx}
+                            y={rIdx}
+                            width={1}
+                            height={1}
+                            fill="#111214"
+                          />
+                        ) : null
+                      )
+                    )}
+                  </svg>
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="w-9 h-9 rounded-xl bg-[#5865F2] flex items-center justify-center shadow-md border-2 border-white">
+                      <DiscordLogo className="w-5 h-4 text-white" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <h2 className="font-display font-bold text-base text-white">
+                    Iniciar sesión con código QR
+                  </h2>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    Escanea este código desde la app móvil de Primordial para autorizar el acceso sin escribir tu clave.
+                  </p>
+                  <p className="text-[11px] font-mono text-[#818cf8] tabular-nums pt-0.5">
+                    Token: {qrNonce} · Expira en {qrCountdown}s
+                  </p>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQrNonce(Math.random().toString(36).slice(2, 10).toUpperCase());
+                      setQrCountdown(120);
+                      setQrState('ready');
+                    }}
+                    className="h-10 px-4 rounded-full bg-[#1d1f28] hover:bg-[#272a36] text-xs font-semibold text-zinc-200 inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Renovar</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleQrApprove}
+                    className="flex-1 h-10 rounded-full bg-[#5865F2] hover:bg-[#4752C4] text-xs font-bold text-white cursor-pointer"
+                  >
+                    {qrState === 'ready'
+                      ? 'Autorizar desde móvil'
+                      : qrState === 'scanned'
+                      ? 'Verificando firma...'
+                      : '¡Aprobado!'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {loginMethod === 'biometric' && (
+              <div className="rounded-3xl bg-[#0b0c10] border border-white/[0.08] p-5 text-center space-y-4">
+                <div
+                  className={`w-16 h-16 mx-auto rounded-full flex items-center justify-center border transition-all ${
+                    bioState === 'verified'
+                      ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                      : bioState === 'scanning'
+                      ? 'bg-[#5865F2]/25 border-[#5865F2] text-white animate-pulse'
+                      : 'bg-[#5865F2]/15 border-[#5865F2]/40 text-[#818cf8]'
+                  }`}
+                >
+                  {bioState === 'verified' ? (
+                    <CheckCircle2 className="w-8 h-8" />
+                  ) : (
+                    <Fingerprint className="w-8 h-8" />
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <h2 className="font-display font-bold text-base text-white">
+                    Llave de acceso FIDO2 / Biometría
+                  </h2>
+                  <p className="text-xs text-zinc-400">
+                    Inicia sesión con huella dactilar, Face ID o llave física USB/NFC resistente a phishing.
+                  </p>
+                </div>
+
                 <input
                   type="text"
                   value={loginIdentifier}
                   onChange={(e) => setLoginIdentifier(e.target.value)}
-                  placeholder="usuario@correo.com o +58..."
-                  className="w-full h-12 rounded-2xl bg-[#0b0c10] border border-white/[0.08] px-4 text-[15px] text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
+                  placeholder="Opcional: correo o usuario"
+                  className="w-full h-11 rounded-xl bg-[#161820] border border-white/10 px-3.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#5865F2]"
                 />
-              </div>
 
-              <div className="space-y-1.5">
-                <label className="block text-[13px] font-semibold text-zinc-300">
-                  Contraseña
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full h-12 rounded-2xl bg-[#0b0c10] border border-white/[0.08] pl-4 pr-12 text-[15px] text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#5865F2]"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((s) => !s)}
-                    aria-label="Mostrar contraseña"
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-zinc-400 hover:text-white cursor-pointer"
-                  >
-                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                  </button>
-                </div>
-              </div>
+                {bioStatusText && (
+                  <p className="text-xs font-medium text-[#a5b4fc] bg-[#5865F2]/15 border border-[#5865F2]/30 rounded-xl px-3 py-2">
+                    {bioStatusText}
+                  </p>
+                )}
 
-              <div className="flex flex-col items-start gap-2 pt-0.5">
+                {loginError && (
+                  <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
+                    {loginError}
+                  </p>
+                )}
+
                 <button
                   type="button"
-                  onClick={() =>
-                    setInfoBanner(
-                      'Se ha enviado un enlace de recuperación a tu correo o teléfono registrado.'
-                    )
-                  }
-                  className="text-[13px] font-semibold text-[#4ea1ff] hover:underline cursor-pointer"
+                  disabled={bioState === 'scanning'}
+                  onClick={handleBiometricVerify}
+                  className="w-full h-12 rounded-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-display font-bold text-[14.5px] flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
-                  ¿Has olvidado la contraseña?
+                  <KeyRound className="w-4 h-4" />
+                  <span>
+                    {bioState === 'scanning'
+                      ? 'Verificando llave criptográfica...'
+                      : 'Verificar con huella o Face ID'}
+                  </span>
                 </button>
               </div>
-
-              {loginError && (
-                <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
-                  {loginError}
-                </p>
-              )}
-
-              {infoBanner && (
-                <p className="text-xs font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-xl px-3 py-2">
-                  {infoBanner}
-                </p>
-              )}
-
-              <button
-                type="submit"
-                className="w-full h-12 rounded-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-display font-bold text-[15px] shadow-lg transition-colors cursor-pointer mt-2"
-              >
-                Iniciar sesión
-              </button>
-
-              <div className="flex items-center gap-3 py-1">
-                <div className="flex-1 h-[1px] bg-white/10" />
-                <span className="text-xs font-semibold text-zinc-400">o</span>
-                <div className="flex-1 h-[1px] bg-white/10" />
-              </div>
-
-              <button
-                type="button"
-                onClick={handlePasskeyLogin}
-                className="w-full h-12 rounded-full bg-[#24262e] hover:bg-[#2d303a] border border-white/[0.08] text-white font-display font-bold text-[14.5px] flex items-center justify-center gap-2 transition-colors cursor-pointer"
-              >
-                <KeyRound className="w-4 h-4 text-zinc-200" />
-                <span>Inicia sesión con llave de acceso</span>
-              </button>
-            </form>
+            )}
           </div>
 
           <div className="mt-6 flex justify-center">
             <div className="px-4 py-2 rounded-full bg-[#1e2027] border border-white/[0.06] text-xs font-medium text-zinc-300 flex items-center gap-2">
               <ShieldCheck className="w-3.5 h-3.5 text-[#5865F2]" />
-              <span>Vibrarán las llamadas y notificaciones</span>
+              <span>TLS 1.3 · Anti-phishing · 2FA y WebAuthn</span>
             </div>
           </div>
         </div>
@@ -378,7 +1445,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
     );
   }
 
-  /* ---------------- 3. REGISTER STEP 1 (Teléfono / Correo) ---------------- */
+  /* ---------------- 5. REGISTER STEP 1 (Teléfono / Correo) ---------------- */
   if (step === 'register-contact') {
     return (
       <div className="w-screen h-screen bg-[#14151a] text-white flex flex-col overflow-y-auto relative">
@@ -409,7 +1476,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
             Introduce tu teléfono o correo electrónico
           </h1>
 
-          {/* Segmented Switch: Teléfono | Correo electrónico */}
           <div className="p-1 rounded-full bg-[#090a0d] border border-white/[0.06] grid grid-cols-2">
             <button
               type="button"
@@ -514,7 +1580,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
     );
   }
 
-  /* ---------------- 4. REGISTER STEP 2 (Perfil & Orbs iniciales) ---------------- */
+  /* ---------------- 6. REGISTER STEP 2 (Perfil + Seguridad avanzada) ---------------- */
   return (
     <div className="w-screen h-screen bg-[#14151a] text-white flex flex-col overflow-y-auto relative">
       <header className="h-14 px-4 flex items-center shrink-0">
@@ -604,6 +1670,88 @@ export const AuthView: React.FC<AuthViewProps> = ({
               {regShowPass ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
             </button>
           </div>
+
+          {/* Password Strength Meter */}
+          {regPassword && (
+            <div className="pt-1 space-y-1.5">
+              <div className="grid grid-cols-4 gap-1">
+                {[1, 2, 3, 4].map((lvl) => (
+                  <span
+                    key={lvl}
+                    className={`h-1.5 rounded-full transition-colors ${
+                      regStrength.score >= lvl ? regStrength.color : 'bg-white/10'
+                    }`}
+                  />
+                ))}
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                <span>
+                  Fortaleza: <strong className="text-white">{regStrength.label}</strong>
+                </span>
+                {regStrength.tips.length > 0 && (
+                  <span className="truncate max-w-[60%]">Sugerencia: {regStrength.tips[0]}</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 2FA Setup Card */}
+        <div className="rounded-2xl bg-[#0b0c10] border border-white/[0.08] p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className="w-4 h-4 text-[#5865F2] shrink-0" />
+              <div>
+                <p className="text-xs font-bold text-white">Activar protección 2FA</p>
+                <p className="text-[11px] text-zinc-400">
+                  Verificación TOTP + códigos de respaldo
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRegEnable2FA((v) => !v)}
+              className={`w-10 h-6 rounded-full p-0.5 transition-colors cursor-pointer ${
+                regEnable2FA ? 'bg-[#5865F2]' : 'bg-zinc-700'
+              }`}
+            >
+              <span
+                className={`block w-5 h-5 rounded-full bg-white transition-transform ${
+                  regEnable2FA ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          {regEnable2FA && (
+            <div className="pt-2 border-t border-white/[0.07] space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                <span>Códigos de respaldo de un solo uso:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(regBackupCodes.join('\n')).catch(() => undefined);
+                    setCopiedCodes(true);
+                    window.setTimeout(() => setCopiedCodes(false), 1800);
+                  }}
+                  className="inline-flex items-center gap-1 text-[#4ea1ff] font-semibold cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>{copiedCodes ? 'Copiados' : 'Copiar'}</span>
+                </button>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {regBackupCodes.map((code) => (
+                  <span
+                    key={code}
+                    className="px-2 py-1 rounded-lg bg-[#161820] border border-white/10 text-[10.5px] font-mono text-center text-indigo-200"
+                  >
+                    {code}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {regError && (

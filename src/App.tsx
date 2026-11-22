@@ -1743,6 +1743,8 @@ export default function App() {
     username: string;
     password: string;
     avatar: AvatarKey;
+    twoFactorEnabled?: boolean;
+    backupCodes?: string[];
   }) => {
     const newId = `acc-${Date.now()}`;
     const newUser: UserProfile = {
@@ -1779,6 +1781,8 @@ export default function App() {
       id: newId,
       contact: payload.contact,
       password: payload.password,
+      twoFactorEnabled: payload.twoFactorEnabled,
+      backupCodes: payload.backupCodes,
       user: newUser,
       ownedBundleIds: [],
       wishlistIds: [],
@@ -1796,6 +1800,13 @@ export default function App() {
       /* ignore */
     }
     showToastMsg(`¡Bienvenido a Primordial, ${payload.displayName}! (+1.200 Orbs)`);
+  };
+
+  const handleResetAccountPassword = (accountId: string, newPassword: string) => {
+    setAccounts((prev) =>
+      prev.map((acc) => (acc.id === accountId ? { ...acc, password: newPassword } : acc))
+    );
+    showToastMsg('Contraseña actualizada de forma segura');
   };
 
   const handleLogout = () => {
@@ -2407,6 +2418,7 @@ export default function App() {
         accounts={accounts}
         onLoginAccount={handleLoginAccount}
         onRegisterAccount={handleRegisterAccount}
+        onResetPassword={handleResetAccountPassword}
       />
     );
   }
