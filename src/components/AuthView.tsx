@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { motion } from 'motion/react';
 import {
   ArrowLeft,
   Check,
@@ -59,7 +59,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [infoBanner, setInfoBanner] = useState<string | null>(null);
-  const [showSavedManager, setShowSavedManager] = useState(false);
 
   // Register state
   const [contactMode, setContactMode] = useState<'phone' | 'email'>('phone');
@@ -91,7 +90,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
         acc.user.displayName.toLowerCase() === idClean
     );
     if (!found) {
-      setLoginError('No encontramos esa cuenta. Usa el gestor de cuentas o regístrate.');
+      setLoginError('No encontramos esa cuenta. Revisa tus datos o regístrate.');
       return;
     }
     if (found.password !== loginPassword && loginPassword !== 'demo1234') {
@@ -206,7 +205,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             className="font-display font-black text-[28px] sm:text-[32px] uppercase tracking-tight leading-[1.08] text-white"
             style={{ textWrap: 'balance' }}
           >
-            TE DAMOS LA BIENVENIDA A DISCORD
+            TE DAMOS LA BIENVENIDA A PRIMORDIAL
           </motion.h1>
 
           <motion.p
@@ -221,30 +220,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
         {/* Bottom CTA Stack */}
         <div className="relative z-10 px-5 pb-8 pt-4 max-w-md mx-auto w-full space-y-3">
-          {accounts.length > 0 && (
-            <div className="pb-1">
-              <p className="text-[11px] font-semibold text-indigo-200/75 text-center mb-2">
-                Cuentas guardadas en este dispositivo
-              </p>
-              <div className="flex items-center justify-center gap-2 flex-wrap">
-                {accounts.slice(0, 3).map((acc) => (
-                  <button
-                    key={acc.id}
-                    type="button"
-                    onClick={() => onLoginAccount(acc)}
-                    className="inline-flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 backdrop-blur-sm text-xs font-semibold text-white transition-colors cursor-pointer"
-                  >
-                    <UserAvatar avatar={acc.user.avatar} size="xs" showStatus={false} />
-                    <span>{acc.user.displayName}</span>
-                    <span className="text-indigo-200 tabular-nums">
-                      ◈ {acc.user.orbs.toLocaleString('es-ES')}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           <button
             type="button"
             onClick={() => {
@@ -354,59 +329,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 >
                   ¿Has olvidado la contraseña?
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setShowSavedManager((v) => !v)}
-                  className="text-[13px] font-semibold text-[#4ea1ff] hover:underline cursor-pointer"
-                >
-                  ¿Usas un gestor de contraseñas?
-                </button>
               </div>
-
-              <AnimatePresence>
-                {showSavedManager && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -6 }}
-                    className="rounded-2xl bg-[#0b0c10] border border-white/10 p-3 space-y-2"
-                  >
-                    <p className="text-[11.5px] font-semibold text-zinc-400">
-                      Selecciona una cuenta guardada para autocompletar:
-                    </p>
-                    <div className="space-y-1.5">
-                      {accounts.map((acc) => (
-                        <button
-                          key={acc.id}
-                          type="button"
-                          onClick={() => {
-                            setLoginIdentifier(acc.contact || acc.user.username);
-                            setLoginPassword(acc.password);
-                            setShowSavedManager(false);
-                            setLoginError(null);
-                          }}
-                          className="w-full p-2 rounded-xl bg-[#161820] hover:bg-[#1e202b] flex items-center justify-between gap-2 text-left cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <UserAvatar avatar={acc.user.avatar} size="sm" showStatus={false} />
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-white truncate">
-                                {acc.user.displayName}
-                              </p>
-                              <p className="text-[11px] text-zinc-400 truncate">
-                                @{acc.user.username} · {acc.contact}
-                              </p>
-                            </div>
-                          </div>
-                          <span className="text-[11px] font-bold text-indigo-300 tabular-nums shrink-0">
-                            ◈ {acc.user.orbs.toLocaleString('es-ES')}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
 
               {loginError && (
                 <p className="text-xs font-semibold text-[#f87171] bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2">
