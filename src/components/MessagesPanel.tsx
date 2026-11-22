@@ -895,7 +895,7 @@ export const MessagesPanel: React.FC<MessagesPanelProps> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 pb-24 md:pb-4">
-        {!searchQuery && activeContext.type === 'dm' && dmFilter === 'all' && (
+        {!searchQuery && activeContext.type === 'dm' && dmFilter === 'all' && activities.length > 0 && (
           <div className="flex items-stretch gap-2.5 overflow-x-auto no-scrollbar py-2 mb-1">
             {activities.map((act) => {
               if (act.gameTitle) {

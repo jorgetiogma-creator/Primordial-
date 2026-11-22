@@ -1,7 +1,7 @@
 import React from 'react';
 import { CalendarDays, Compass, MessageCircle, Plus, Star } from 'lucide-react';
 import { Server } from '../types/discord';
-import { AvatarArtwork, ServerIconArt } from './DiscordArt';
+import { ServerIconArt } from './DiscordArt';
 
 interface ServerRailProps {
   servers: Server[];
@@ -72,22 +72,6 @@ export const ServerRail: React.FC<ServerRailProps> = ({
           }`}
         >
           <Star className="w-5 h-5 fill-current" />
-        </button>
-      </div>
-
-      {/* Pinned Bot Avatar with badge 1 */}
-      <div className="relative w-full flex items-center justify-center">
-        <button
-          onClick={onOpenBotDm}
-          title="Bumper Bot"
-          className="relative w-12 h-12 overflow-visible cursor-pointer transition-transform active:scale-95 group"
-        >
-          <div className="w-12 h-12 rounded-full group-hover:rounded-2xl overflow-hidden bg-[#17202a] transition-all duration-200">
-            <AvatarArtwork avatar="bumper" />
-          </div>
-          <span className="absolute -bottom-1 -right-1 min-w-[20px] h-[20px] px-1 rounded-full bg-[#da373c] text-white text-[11px] font-bold tabular-nums flex items-center justify-center border-[3px] border-[var(--dc-bg-rail)]">
-            1
-          </span>
         </button>
       </div>
 

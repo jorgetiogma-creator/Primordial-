@@ -11,16 +11,20 @@ import {
   VoiceSession,
 } from '../types/discord';
 import {
-  DiscordLogo,
-  GENERATED_ASSETS,
   LaurelQuestIcon,
   NitroWheelIcon,
   OrbsCrystalIcon,
+  PrimordialAppIcon,
   SafeImage,
   UserAvatar,
 } from './DiscordArt';
+import { DISCOVERABLE_COMMUNITIES, FRIEND_DIRECTORY } from '../data/discordData';
 import { BoostGemIcon } from './ServerBoostView';
 import { PWAInstallButton } from './PWAPrompts';
+
+const PrimordialRowIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5' }) => (
+  <PrimordialAppIcon className={`${className} rounded-md border border-white/10`} />
+);
 
 /* ---------------- EXACT SETTINGS VIEW (Screenshots 5 & 6) ---------------- */
 export const SettingsView: React.FC<{
@@ -80,7 +84,7 @@ export const SettingsView: React.FC<{
     { id: 'escribiendo', label: 'Indicador de escritura', icon: MessageSquareMore, action: () => setActiveSubPanel('Indicador de escritura') },
     { id: 'navegador', label: 'Navegador web', icon: Globe, action: () => setActiveSubPanel('Navegador web') },
     { id: 'notificaciones', label: 'Notificaciones', icon: Bell, action: () => setActiveSubPanel('Notificaciones') },
-    { id: 'icono', label: 'Icono de la aplicación', icon: DiscordLogo, action: () => setActiveSubPanel('Icono de la aplicación') },
+    { id: 'icono', label: 'Icono de la aplicación', icon: PrimordialRowIcon, action: () => setActiveSubPanel('Icono de la aplicación') },
     { id: 'avanzado', label: 'Avanzado', icon: Settings, action: () => setActiveSubPanel('Avanzado') },
   ].filter((r) => matches(r.label));
 
@@ -208,10 +212,24 @@ export const SettingsView: React.FC<{
         <div className="flex-1 overflow-y-auto px-4 py-4 max-w-xl mx-auto w-full space-y-4">
           <div className="rounded-2xl bg-[var(--dc-bg-chat)] border border-[var(--dc-border)] p-4 space-y-3">
             <p className="font-bold text-base">{activeSubPanel}</p>
-            <p className="text-sm text-[var(--dc-text-secondary)]">
-              Configuración de {activeSubPanel.toLowerCase()} para la cuenta{' '}
-              <strong>{user.username}</strong>.
-            </p>
+            {activeSubPanel === 'Icono de la aplicación' ? (
+              <div className="flex items-center gap-4 p-3 rounded-xl bg-[var(--dc-bg-card)] border border-[var(--dc-border)]">
+                <PrimordialAppIcon className="w-16 h-16 rounded-2xl shadow-lg border border-white/15 shrink-0" />
+                <div>
+                  <p className="font-display font-bold text-sm text-[var(--dc-text-primary)]">
+                    Primordial · Emblema Oficial
+                  </p>
+                  <p className="text-xs text-[var(--dc-text-secondary)] mt-0.5">
+                    Activo en la aplicación web, PWA y acceso directo de Android.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--dc-text-secondary)]">
+                Configuración de {activeSubPanel.toLowerCase()} para la cuenta{' '}
+                <strong>{user.username}</strong>.
+              </p>
+            )}
             {activeSubPanel === 'Indicador de escritura' && (
               <label className="flex items-center justify-between pt-2 cursor-pointer">
                 <span className="text-sm">Mostrar cuando otros están escribiendo</span>
@@ -431,23 +449,40 @@ export const FriendsView: React.FC<{
   dms: DirectMessageThread[];
   onBack: () => void;
   onOpenDm: (dmId: string) => void;
-  onAddFriend: (username: string) => void;
+  onAddFriend: (
+    username: string,
+    opts?: { avatar?: UserProfile['avatar']; status?: UserProfile['status']; initialGreeting?: string }
+  ) => void;
   onInspectUser?: (userId: string, fallback?: Partial<PublicUserProfile>) => void;
 }> = ({ dms, onBack, onOpenDm, onAddFriend, onInspectUser }) => {
-  const [tab, setTab] = useState<'online' | 'all' | 'add'>('all');
+  const friendThreads = dms.filter((d) => !d.isBot && !d.isGroup);
+  const [tab, setTab] = useState<'online' | 'all' | 'add'>(friendThreads.length === 0 ? 'add' : 'all');
   const [friendHandle, setFriendHandle] = useState('');
   const [addedMsg, setAddedMsg] = useState<string | null>(null);
 
-  const friendThreads = dms.filter((d) => !d.isBot && !d.isGroup);
   const filtered =
     tab === 'online' ? friendThreads.filter((f) => f.status === 'online') : friendThreads;
+
+  const q = friendHandle.trim().toLowerCase();
+  const directoryMatches = FRIEND_DIRECTORY.filter(
+    (entry) =>
+      !q ||
+      entry.displayName.toLowerCase().includes(q) ||
+      entry.username.toLowerCase().includes(q) ||
+      entry.bio.toLowerCase().includes(q)
+  );
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     const clean = friendHandle.trim();
     if (!clean) return;
-    onAddFriend(clean);
-    setAddedMsg(`Solicitud enviada y chat abierto con ${clean}`);
+    const matched = FRIEND_DIRECTORY.find(
+      (entry) =>
+        entry.username.toLowerCase() === clean.toLowerCase() ||
+        entry.displayName.toLowerCase() === clean.toLowerCase()
+    );
+    onAddFriend(matched ? matched.displayName : clean, matched ? { avatar: matched.avatar, status: matched.status } : undefined);
+    setAddedMsg(`Chat abierto con ${matched ? matched.displayName : clean}`);
     setFriendHandle('');
     setTimeout(() => setAddedMsg(null), 2600);
   };
@@ -469,20 +504,20 @@ export const FriendsView: React.FC<{
           onClick={() => setTab('add')}
           className="px-3.5 py-1.5 rounded-full dc-btn-success text-xs font-bold cursor-pointer whitespace-nowrap"
         >
-          Añadir amigo
+          Buscar amigos
         </button>
       </header>
 
-      <div className="px-4 py-2.5 flex items-center gap-2 border-b border-[var(--dc-border)]">
+      <div className="px-4 py-2.5 flex items-center gap-2 border-b border-[var(--dc-border)] overflow-x-auto no-scrollbar">
         {[
-          { id: 'all', label: 'Todos' },
+          { id: 'all', label: `Todos (${friendThreads.length})` },
           { id: 'online', label: 'En línea' },
-          { id: 'add', label: 'Añadir amigo' },
+          { id: 'add', label: 'Buscar y añadir' },
         ].map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id as 'all' | 'online' | 'add')}
-            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold cursor-pointer ${
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold cursor-pointer whitespace-nowrap ${
               tab === t.id ? 'dc-btn-primary' : 'dc-btn-secondary'
             }`}
           >
@@ -491,39 +526,145 @@ export const FriendsView: React.FC<{
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 max-w-2xl w-full mx-auto">
+      <div className="flex-1 overflow-y-auto p-4 max-w-2xl w-full mx-auto space-y-4">
         {tab === 'add' ? (
-          <form
-            onSubmit={handleAdd}
-            className="space-y-3 bg-[var(--dc-bg-card)] p-5 rounded-2xl border border-[var(--dc-border)]"
-          >
-            <h2 className="font-display font-bold text-base">Añadir amigo</h2>
-            <p className="text-xs text-[var(--dc-text-secondary)]">
-              Puedes añadir amigos con su nombre de usuario de Discord.
-            </p>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={friendHandle}
-                onChange={(e) => setFriendHandle(e.target.value)}
-                placeholder="Introduce un nombre de usuario..."
-                className="flex-1 bg-[var(--dc-bg-input)] border border-[var(--dc-border)] rounded-xl px-3.5 py-2.5 text-sm text-[var(--dc-text-primary)] focus:outline-none focus:border-[#5865F2]"
-              />
-              <button
-                type="submit"
-                className="px-4 py-2.5 rounded-xl dc-btn-primary text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>Enviar</span>
-              </button>
-            </div>
-            {addedMsg && (
-              <p className="text-xs text-[#23a55a] font-semibold flex items-center gap-1">
-                <UserCheck className="w-4 h-4" />
-                <span>{addedMsg}</span>
+          <>
+            <form
+              onSubmit={handleAdd}
+              className="space-y-3 bg-[var(--dc-bg-card)] p-5 rounded-2xl border border-[var(--dc-border)]"
+            >
+              <h2 className="font-display font-bold text-base">Buscar o añadir amigos</h2>
+              <p className="text-xs text-[var(--dc-text-secondary)]">
+                Busca personas en Primordial por nombre o escribe su usuario exacto para empezar a chatear.
               </p>
-            )}
-          </form>
+              <div className="flex gap-2">
+                <div className="flex-1 flex items-center gap-2 bg-[var(--dc-bg-input)] border border-[var(--dc-border)] rounded-xl px-3.5 focus-within:border-[#5865F2]">
+                  <Search className="w-4 h-4 text-[var(--dc-text-muted)] shrink-0" />
+                  <input
+                    type="text"
+                    value={friendHandle}
+                    onChange={(e) => setFriendHandle(e.target.value)}
+                    placeholder="Buscar por nombre o @usuario..."
+                    className="flex-1 bg-transparent py-2.5 text-sm text-[var(--dc-text-primary)] focus:outline-none"
+                  />
+                  {friendHandle && (
+                    <button
+                      type="button"
+                      onClick={() => setFriendHandle('')}
+                      className="text-[var(--dc-text-muted)] hover:text-white cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="submit"
+                  className="px-4 py-2.5 rounded-xl dc-btn-primary text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>Añadir</span>
+                </button>
+              </div>
+              {addedMsg && (
+                <p className="text-xs text-[#23a55a] font-semibold flex items-center gap-1">
+                  <UserCheck className="w-4 h-4" />
+                  <span>{addedMsg}</span>
+                </p>
+              )}
+            </form>
+
+            <div className="space-y-2">
+              <p className="text-xs font-bold uppercase tracking-wider text-[var(--dc-text-muted)] px-1">
+                {q ? `Resultados (${directoryMatches.length})` : 'Personas en Primordial'}
+              </p>
+
+              {directoryMatches.map((person) => {
+                const existingDm = dms.find(
+                  (d) =>
+                    d.id === person.id ||
+                    d.id === `dm-${person.id}` ||
+                    d.name.toLowerCase() === person.displayName.toLowerCase()
+                );
+
+                return (
+                  <div
+                    key={person.id}
+                    onClick={() =>
+                      onInspectUser?.(person.id, {
+                        displayName: person.displayName,
+                        username: person.username,
+                        avatar: person.avatar,
+                        status: person.status,
+                        bio: person.bio,
+                        customStatus: person.customStatus,
+                      })
+                    }
+                    className="w-full flex items-center justify-between gap-3 p-3 rounded-2xl bg-[var(--dc-bg-card)] hover:bg-[var(--dc-bg-elevated)] border border-[var(--dc-border)] transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <UserAvatar
+                        avatar={person.avatar}
+                        status={person.status}
+                        size="md"
+                        borderColor="var(--dc-bg-card)"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="font-bold text-sm truncate">{person.displayName}</p>
+                          <span className="text-[11px] text-[var(--dc-text-muted)] truncate">
+                            @{person.username}
+                          </span>
+                        </div>
+                        <p className="text-xs text-[var(--dc-text-secondary)] truncate mt-0.5">
+                          {person.customStatus || person.bio}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (existingDm) {
+                          onOpenDm(existingDm.id);
+                        } else {
+                          onAddFriend(person.displayName, {
+                            avatar: person.avatar,
+                            status: person.status,
+                          });
+                        }
+                      }}
+                      className={`px-3.5 py-1.5 rounded-full text-xs font-bold shrink-0 cursor-pointer whitespace-nowrap ${
+                        existingDm ? 'dc-btn-secondary' : 'dc-btn-primary'
+                      }`}
+                    >
+                      {existingDm ? 'Abrir chat' : 'Añadir y chatear'}
+                    </button>
+                  </div>
+                );
+              })}
+
+              {q && directoryMatches.length === 0 && (
+                <div className="rounded-2xl bg-[var(--dc-bg-card)] border border-[var(--dc-border)] p-5 text-center space-y-3">
+                  <p className="text-sm text-[var(--dc-text-secondary)]">
+                    No aparece «{friendHandle.trim()}» en sugerencias, pero puedes agregarlo directamente por usuario.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const clean = friendHandle.trim();
+                      onAddFriend(clean);
+                      setFriendHandle('');
+                    }}
+                    className="px-4 py-2 rounded-full dc-btn-primary text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>Añadir a «{friendHandle.trim()}»</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
         ) : (
           <div className="space-y-2">
             {filtered.map((f) => (
@@ -569,6 +710,24 @@ export const FriendsView: React.FC<{
                 </button>
               </div>
             ))}
+
+            {filtered.length === 0 && (
+              <div className="rounded-2xl bg-[var(--dc-bg-card)] border border-[var(--dc-border)] p-8 text-center space-y-3">
+                <p className="text-sm font-medium text-[var(--dc-text-secondary)]">
+                  {tab === 'online'
+                    ? 'Ninguno de tus amigos añadidos está en línea ahora.'
+                    : 'Aún no has añadido amigos.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setTab('add')}
+                  className="px-5 py-2.5 rounded-full dc-btn-primary text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Search className="w-4 h-4" />
+                  <span>Buscar amigos</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -676,6 +835,18 @@ export const NotificationsView: React.FC<{
             </button>
           );
         })}
+
+        {visible.length === 0 && (
+          <div className="rounded-2xl bg-[var(--dc-bg-card)] border border-[var(--dc-border)] p-8 text-center space-y-2 mt-4">
+            <Bell className="w-8 h-8 text-[var(--dc-text-muted)] mx-auto opacity-75" />
+            <p className="font-bold text-sm text-[var(--dc-text-primary)]">
+              Sin notificaciones por ahora
+            </p>
+            <p className="text-xs text-[var(--dc-text-muted)]">
+              Aquí aparecerán tus menciones, respuestas y avisos de tus amigos o servidores.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1208,41 +1379,31 @@ export const DiscoverModal: React.FC<{
   const [q, setQ] = useState('');
   if (!open) return null;
 
-  const communities = [
-    {
-      name: 'MONOPOLY GO!',
-      members: '1.291.944 miembros',
-      desc: 'Official Discord for the mobile game MONOPOLY GO!',
-      thumb: GENERATED_ASSETS.monopolyBanner,
-    },
-    {
-      name: 'Aldea Roleplay Oficial',
-      members: '18.4k miembros',
-      desc: 'Comunidad oficial de Aldea Roleplay y eventos diarios.',
-      thumb: GENERATED_ASSETS.aldeaRoleplayIcon,
-    },
-    {
-      name: 'Dune: Arrakis Hub',
-      members: '42.1k miembros',
-      desc: 'Servidor oficial de la misión Dune: Part Three.',
-      thumb: GENERATED_ASSETS.duneBanner,
-    },
-    {
-      name: 'Zenless Zone Zero ES',
-      members: '29.2k miembros',
-      desc: 'Guías, builds y comunidad de New Eridu.',
-      thumb: GENERATED_ASSETS.zzzEllenBanner,
-    },
-  ].filter((c) => c.name.toLowerCase().includes(q.toLowerCase()));
+  const trimmed = q.trim();
+  const lowerQ = trimmed.toLowerCase();
+  const communities = DISCOVERABLE_COMMUNITIES.filter(
+    (c) =>
+      !lowerQ ||
+      c.name.toLowerCase().includes(lowerQ) ||
+      c.category.toLowerCase().includes(lowerQ) ||
+      c.desc.toLowerCase().includes(lowerQ)
+  );
+  const hasExactMatch = communities.some((c) => c.name.toLowerCase() === lowerQ);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-md rounded-3xl bg-[var(--dc-bg-sheet)] border border-[var(--dc-border)] p-5 space-y-4 max-h-[85vh] flex flex-col">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-3xl bg-[var(--dc-bg-sheet)] border border-[var(--dc-border)] p-5 space-y-4 max-h-[85vh] flex flex-col"
+      >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-[#23a55a]" />
             <h3 className="font-display font-bold text-lg text-[var(--dc-text-primary)]">
-              Descubrir servidores
+              Buscar y descubrir servidores
             </h3>
           </div>
           <button onClick={onClose} className="p-1 text-[var(--dc-text-muted)] cursor-pointer">
@@ -1250,15 +1411,25 @@ export const DiscoverModal: React.FC<{
           </button>
         </div>
 
-        <div className="flex items-center gap-2 bg-[var(--dc-bg-input)] rounded-xl px-3 py-2 border border-[var(--dc-border)]">
-          <Search className="w-4 h-4 text-[var(--dc-text-muted)]" />
+        <div className="flex items-center gap-2 bg-[var(--dc-bg-input)] rounded-xl px-3 py-2 border border-[var(--dc-border)] focus-within:border-[#5865F2]">
+          <Search className="w-4 h-4 text-[var(--dc-text-muted)] shrink-0" />
           <input
             type="text"
+            autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Explorar comunidades..."
+            placeholder="Buscar servidores por nombre o tema..."
             className="flex-1 bg-transparent text-sm text-[var(--dc-text-primary)] focus:outline-none"
           />
+          {q && (
+            <button
+              type="button"
+              onClick={() => setQ('')}
+              className="text-[var(--dc-text-muted)] hover:text-white cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto space-y-2.5">
@@ -1272,14 +1443,22 @@ export const DiscoverModal: React.FC<{
                   <SafeImage src={c.thumb} alt={c.name} className="w-full h-full object-cover" />
                 </div>
                 <div className="min-w-0">
-                  <p className="font-bold text-sm text-[var(--dc-text-primary)] truncate">{c.name}</p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="font-bold text-sm text-[var(--dc-text-primary)] truncate">{c.name}</p>
+                    <span className="px-1.5 py-0.5 rounded bg-white/10 text-[10px] text-[var(--dc-text-muted)] shrink-0">
+                      {c.category}
+                    </span>
+                  </div>
                   <p className="text-xs text-[var(--dc-text-muted)] mt-0.5 line-clamp-1">{c.desc}</p>
-                  <p className="text-[11px] text-[#23a55a] font-semibold mt-1 tabular-nums">{c.members}</p>
+                  <p className="text-[11px] text-[#23a55a] font-semibold mt-1 tabular-nums">
+                    {c.online} · {c.members}
+                  </p>
                 </div>
               </div>
               <button
                 onClick={() => {
                   onJoinCommunity(c.name);
+                  setQ('');
                   onClose();
                 }}
                 className="px-4 py-2 rounded-full dc-btn-success text-xs font-bold shrink-0 cursor-pointer whitespace-nowrap"
@@ -1288,6 +1467,30 @@ export const DiscoverModal: React.FC<{
               </button>
             </div>
           ))}
+
+          {trimmed && !hasExactMatch && (
+            <div className="p-3.5 rounded-2xl bg-[#5865F2]/10 border border-[#5865F2]/30 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-bold text-sm text-[var(--dc-text-primary)] truncate">
+                  Crear o unirse a «{trimmed}»
+                </p>
+                <p className="text-xs text-[var(--dc-text-muted)] mt-0.5">
+                  Abre este servidor directamente en tu barra lateral
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onJoinCommunity(trimmed);
+                  setQ('');
+                  onClose();
+                }}
+                className="px-4 py-2 rounded-full dc-btn-primary text-xs font-bold shrink-0 cursor-pointer whitespace-nowrap"
+              >
+                Crear / Unirse
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

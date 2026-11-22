@@ -22,7 +22,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { AvatarKey, StoredAccount } from '../types/discord';
-import { DiscordLogo, UserAvatar } from './DiscordArt';
+import { PrimordialAppIcon, UserAvatar } from './DiscordArt';
 
 interface AuthViewProps {
   accounts: StoredAccount[];
@@ -641,7 +641,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             transition={{ duration: 0.35 }}
             className="mb-7"
           >
-            <DiscordLogo className="w-20 h-16 text-white drop-shadow-[0_8px_32px_rgba(88,101,242,0.55)]" />
+            <PrimordialAppIcon className="w-24 h-24 rounded-3xl border border-white/20 shadow-[0_12px_40px_rgba(56,189,248,0.45)]" />
           </motion.div>
 
           <motion.h1
@@ -1324,8 +1324,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     )}
                   </svg>
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="w-9 h-9 rounded-xl bg-[#5865F2] flex items-center justify-center shadow-md border-2 border-white">
-                      <DiscordLogo className="w-5 h-4 text-white" />
+                    <div className="w-9 h-9 rounded-xl overflow-hidden shadow-md border-2 border-white">
+                      <PrimordialAppIcon className="w-full h-full" />
                     </div>
                   </div>
                 </div>

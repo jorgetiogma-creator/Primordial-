@@ -3,8 +3,11 @@ import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import {
   Award,
   Bell,
+  Compass,
   Home,
   Moon,
+  Plus,
+  Search,
   Settings,
   Store,
   Sun,
@@ -50,6 +53,7 @@ import {
   LaurelQuestIcon,
   NitroWheelIcon,
   OrbsCrystalIcon,
+  PrimordialAppIcon,
   UserAvatar,
 } from './components/DiscordArt';
 import { AuthView } from './components/AuthView';
@@ -84,6 +88,7 @@ const SHOP_OWNERSHIP_MIGRATION_KEY = 'discord_shop_ownership_v1';
 const USER_ORBS_GRANT_KEY = 'discord_user_1q_orbs_grant_v1';
 const SQUAD_DEV_MIGRATION_KEY = 'discord_squad_dev_v1';
 const SQUAD_DEV_ACTIVE_KEY = 'discord_squad_dev_active_v2';
+const CLEAN_EMPTY_START_KEY = 'primordial_clean_empty_v1';
 const USER_ONLY_ORBS_AMOUNT = 1000000000000000;
 const SQUAD_DEV_MEMBER_COUNT = 20909470267;
 const SQUAD_DEV_MEMBER_DISPLAY = '209.0947.0267';
@@ -295,29 +300,16 @@ export default function App() {
 
   const [dms, setDms] = useState<DirectMessageThread[]>(() => {
     try {
-      const migrated = localStorage.getItem(SHOP_OWNERSHIP_MIGRATION_KEY);
+      if (!localStorage.getItem(CLEAN_EMPTY_START_KEY)) {
+        return INITIAL_DMS;
+      }
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const savedDms: DirectMessageThread[] | undefined = JSON.parse(raw).dms;
-        if (Array.isArray(savedDms) && savedDms.length > 0) {
-          if (!migrated) {
-            localStorage.setItem(SHOP_OWNERSHIP_MIGRATION_KEY, '1');
-            return savedDms.map((d) => {
-              const hasGifts = Boolean(d.giftedBundleIds && d.giftedBundleIds.length > 0);
-              return {
-                ...d,
-                decoration: hasGifts ? d.decoration : undefined,
-                nameplate: hasGifts ? d.nameplate : undefined,
-                pinned: d.pinned ?? d.id === 'dm-snuf',
-                favorite: d.favorite ?? (d.id === 'dm-snuf' || d.id === 'dm-alex'),
-                unreadCount: d.unreadCount ?? (d.unread ? 1 : 0),
-              };
-            });
-          }
+        if (Array.isArray(savedDms)) {
           return savedDms;
         }
       }
-      localStorage.setItem(SHOP_OWNERSHIP_MIGRATION_KEY, '1');
     } catch {
       /* ignore */
     }
@@ -325,109 +317,17 @@ export default function App() {
   });
 
   const [servers, setServers] = useState<Server[]>(() => {
-    const OLD_DEMO_IDS = new Set([
-      'srv-jmt',
-      'srv-hoyo',
-      'srv-mtg',
-      'srv-tnu',
-      'srv-b',
-      'srv-imperio',
-      'srv-fl',
-      'srv-au',
-      'srv-zevr',
-      'srv-slbr',
-      'srv-rebo',
-      'srv-arrow',
-    ]);
     try {
-      const cleaned = localStorage.getItem('discord_clean_servers_v3');
-      const squadDevMigrated = localStorage.getItem(SQUAD_DEV_MIGRATION_KEY);
-      const squadDevActiveMigrated = localStorage.getItem(SQUAD_DEV_ACTIVE_KEY);
+      if (!localStorage.getItem(CLEAN_EMPTY_START_KEY)) {
+        return INITIAL_SERVERS;
+      }
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const saved: Server[] | undefined = JSON.parse(raw).servers;
-        if (saved && saved.length > 0) {
-          const filtered = saved.filter((s) => !OLD_DEMO_IDS.has(s.id));
-          const initZn = INITIAL_SERVERS[0];
-          const initSquadDev = INITIAL_SERVERS[1];
-          const mapped = filtered.map((s) => {
-            const isSquadDev =
-              s.id === 'srv-squad-dev' ||
-              s.name.trim().toLowerCase() === 'squad dev' ||
-              s.name.trim().toLowerCase() === 'squad.dev';
-            if (isSquadDev) {
-              if (!squadDevActiveMigrated && initSquadDev) {
-                const existingGeneral = s.channels.find(
-                  (c) => c.id === 'sd-ch-general' || c.name.toLowerCase().includes('general')
-                );
-                const initGeneral = initSquadDev.channels.find((c) => c.id === 'sd-ch-general');
-                const extraUserMsgs =
-                  existingGeneral?.messages.filter(
-                    (m) => m.id !== 'sd-m1' && !initGeneral?.messages.some((im) => im.id === m.id)
-                  ) || [];
-                const mergedChannels = initSquadDev.channels.map((ic) => {
-                  if (ic.id === 'sd-ch-general') {
-                    return { ...ic, messages: [...ic.messages, ...extraUserMsgs] };
-                  }
-                  const savedMatch = s.channels.find((sc) => sc.id === ic.id);
-                  if (savedMatch && savedMatch.messages.length > 0) {
-                    return savedMatch;
-                  }
-                  return ic;
-                });
-                const customSavedChannels = s.channels.filter(
-                  (sc) => !initSquadDev.channels.some((ic) => ic.id === sc.id)
-                );
-                return {
-                  ...initSquadDev,
-                  ...s,
-                  memberCount: SQUAD_DEV_MEMBER_COUNT,
-                  memberCountDisplay: SQUAD_DEV_MEMBER_DISPLAY,
-                  onlineCount: Math.max(s.onlineCount || 0, initSquadDev.onlineCount),
-                  memberRoleIds: {
-                    ...initSquadDev.memberRoleIds,
-                    ...(s.memberRoleIds || {}),
-                  },
-                  channels: [...mergedChannels, ...customSavedChannels],
-                };
-              }
-              return {
-                ...s,
-                memberCount: SQUAD_DEV_MEMBER_COUNT,
-                memberCountDisplay: SQUAD_DEV_MEMBER_DISPLAY,
-              };
-            }
-            if (s.id === 'srv-zn') {
-              const needsZenithUpgrade = !cleaned || !s.categoriesOrder || !s.roles;
-              return {
-                ...initZn,
-                ...s,
-                bannerImage: s.bannerImage || initZn.bannerImage,
-                channels: needsZenithUpgrade ? initZn.channels : s.channels,
-                categoriesOrder: s.categoriesOrder || initZn.categoriesOrder,
-                roles: s.roles || initZn.roles,
-                memberRoleIds: s.memberRoleIds || initZn.memberRoleIds,
-                customEmojis: s.customEmojis || initZn.customEmojis,
-                stickers: s.stickers || initZn.stickers,
-              };
-            }
-            return s;
-          });
-          localStorage.setItem('discord_clean_servers_v3', '1');
-          let result = mapped.some((s) => s.id === 'srv-zn') ? mapped : [initZn, ...mapped];
-          const hasSquadDev = result.some(
-            (s) =>
-              s.id === 'srv-squad-dev' ||
-              s.name.trim().toLowerCase() === 'squad dev' ||
-              s.name.trim().toLowerCase() === 'squad.dev'
-          );
-          if (!hasSquadDev && !squadDevMigrated && initSquadDev) {
-            result = [...result, initSquadDev];
-          }
-          return result;
+        if (Array.isArray(saved)) {
+          return saved;
         }
       }
-      localStorage.setItem('discord_clean_servers_v3', '1');
     } catch {
       /* ignore */
     }
@@ -482,7 +382,7 @@ export default function App() {
     | { type: 'servidores' }
     | { type: 'server'; serverId: string }
   >({ type: 'dm' });
-  const [selectedDmId, setSelectedDmId] = useState<string | null>('dm-snuf');
+  const [selectedDmId, setSelectedDmId] = useState<string | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
 
@@ -532,6 +432,8 @@ export default function App() {
       localStorage.setItem(USER_ORBS_GRANT_KEY, '1');
       localStorage.setItem(SQUAD_DEV_MIGRATION_KEY, '1');
       localStorage.setItem(SQUAD_DEV_ACTIVE_KEY, '1');
+      localStorage.setItem(CLEAN_EMPTY_START_KEY, '1');
+      localStorage.setItem(SHOP_OWNERSHIP_MIGRATION_KEY, '1');
     } catch {
       /* ignore */
     }
@@ -604,7 +506,7 @@ export default function App() {
 
   const unreadTotal = useMemo(() => {
     const serverSum = servers.reduce((acc, s) => acc + (s.badgeCount || 0), 0);
-    return Math.max(14, serverSum + notifications.filter((n) => n.unread).length + 11);
+    return serverSum + notifications.filter((n) => n.unread).length;
   }, [servers, notifications]);
 
   const unreadNotificationsCount = notifications.filter((n) => n.unread).length;
@@ -1844,6 +1746,18 @@ export default function App() {
           bannerImage: GENERATED_ASSETS.monopolyBanner,
           accentColor: '#0284c7',
         }
+      : lower.includes('zenith')
+      ? {
+          customIconUrl: GENERATED_ASSETS.zenithIcon,
+          bannerImage: GENERATED_ASSETS.zenithBanner,
+          accentColor: '#e52521',
+        }
+      : lower.includes('squad dev') || lower.includes('squad.dev')
+      ? {
+          customIconUrl: '/icon-512.png',
+          bannerImage: GENERATED_ASSETS.zenithBanner,
+          accentColor: '#5865F2',
+        }
       : lower.includes('aldea')
       ? {
           customIconUrl: GENERATED_ASSETS.aldeaRoleplayIcon,
@@ -2299,7 +2213,7 @@ export default function App() {
                 handleAddFriend(n.title.split(' ')[0] || 'Jorge', { avatar: n.avatar });
               }
             } else {
-              handleSelectDm('dm-snuf');
+              setScreen('amigos');
             }
           }}
         />
@@ -2341,6 +2255,61 @@ export default function App() {
           />
         );
       }
+    }
+
+    if (
+      ((activeContext.type === 'dm' ||
+        activeContext.type === 'favorites' ||
+        activeContext.type === 'servidores') &&
+        !activeDm) ||
+      (activeContext.type === 'server' && !activeServer)
+    ) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-[var(--dc-bg-chat)] text-[var(--dc-text-primary)]">
+          <div className="max-w-md w-full space-y-5">
+            <div className="flex justify-center">
+              <PrimordialAppIcon className="w-20 h-20 rounded-3xl shadow-2xl border border-white/15" />
+            </div>
+            <div className="space-y-1.5">
+              <h2 className="font-display font-extrabold text-2xl tracking-tight">
+                Bienvenido a Primordial
+              </h2>
+              <p className="text-sm text-[var(--dc-text-secondary)]">
+                Tu espacio empieza limpio: busca a tus amigos para chatear o crea y explora servidores a tu manera.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setScreen('amigos')}
+                className="px-4 py-3 rounded-2xl dc-btn-primary text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Search className="w-4 h-4 shrink-0" />
+                <span>Buscar amigos</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateServerTemplate('friends');
+                  setShowCreateServer(true);
+                }}
+                className="px-4 py-3 rounded-2xl dc-btn-secondary text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Plus className="w-4 h-4 shrink-0" />
+                <span>Crear servidor</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDiscover(true)}
+                className="px-4 py-3 rounded-2xl dc-btn-success text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Compass className="w-4 h-4 shrink-0" />
+                <span>Buscar servidores</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      );
     }
 
     const activeTypingKey =
@@ -2499,7 +2468,7 @@ export default function App() {
                           handleAddFriend(n.title.split(' ')[0] || 'Jorge', { avatar: n.avatar });
                         }
                       } else {
-                        handleSelectDm('dm-snuf');
+                        setScreen('amigos');
                       }
                     }}
                   />
@@ -2900,66 +2869,85 @@ export default function App() {
             </div>
 
             <div className="space-y-1.5 max-h-56 overflow-y-auto">
-              {dms
-                .filter((d) => !d.isGroup)
-                .map((d) => {
-                  const checked = groupMemberIds.includes(d.id);
-                  return (
-                    <div
-                      key={d.id}
-                      className={`w-full flex items-center justify-between gap-2 p-2 rounded-xl transition-colors ${
-                        checked
-                          ? 'bg-[#5865F2]/20 border border-[#5865F2]/50'
-                          : 'hover:bg-black/5 dark:hover:bg-white/10'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (groupMemberIds.length === 0 && !groupTitle.trim() && !groupCustomIconUrl) {
-                            handleSelectDm(d.id);
-                            setShowNewGroupDm(false);
-                          } else {
+              {dms.filter((d) => !d.isGroup).length === 0 ? (
+                <div className="rounded-2xl bg-[var(--dc-bg-card)] border border-[var(--dc-border)] p-5 text-center space-y-2.5">
+                  <p className="text-xs text-[var(--dc-text-secondary)]">
+                    Primero busca y añade amigos para poder crear chats grupales.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNewGroupDm(false);
+                      setScreen('amigos');
+                    }}
+                    className="px-4 py-2 rounded-full dc-btn-primary text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Buscar amigos</span>
+                  </button>
+                </div>
+              ) : (
+                dms
+                  .filter((d) => !d.isGroup)
+                  .map((d) => {
+                    const checked = groupMemberIds.includes(d.id);
+                    return (
+                      <div
+                        key={d.id}
+                        className={`w-full flex items-center justify-between gap-2 p-2 rounded-xl transition-colors ${
+                          checked
+                            ? 'bg-[#5865F2]/20 border border-[#5865F2]/50'
+                            : 'hover:bg-black/5 dark:hover:bg-white/10'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (groupMemberIds.length === 0 && !groupTitle.trim() && !groupCustomIconUrl) {
+                              handleSelectDm(d.id);
+                              setShowNewGroupDm(false);
+                            } else {
+                              setGroupMemberIds((prev) =>
+                                prev.includes(d.id)
+                                  ? prev.filter((id) => id !== d.id)
+                                  : [...prev, d.id]
+                              );
+                            }
+                          }}
+                          className="flex-1 flex items-center gap-3 text-left min-w-0 cursor-pointer"
+                        >
+                          <UserAvatar
+                            avatar={d.avatar}
+                            status={d.status}
+                            size="sm"
+                            borderColor="var(--dc-bg-sheet)"
+                          />
+                          <span className="text-sm font-semibold text-[var(--dc-text-primary)] truncate">
+                            {d.name}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
                             setGroupMemberIds((prev) =>
                               prev.includes(d.id)
                                 ? prev.filter((id) => id !== d.id)
                                 : [...prev, d.id]
-                            );
+                            )
                           }
-                        }}
-                        className="flex-1 flex items-center gap-3 text-left min-w-0 cursor-pointer"
-                      >
-                        <UserAvatar
-                          avatar={d.avatar}
-                          status={d.status}
-                          size="sm"
-                          borderColor="var(--dc-bg-sheet)"
-                        />
-                        <span className="text-sm font-semibold text-[var(--dc-text-primary)] truncate">
-                          {d.name}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setGroupMemberIds((prev) =>
-                            prev.includes(d.id)
-                              ? prev.filter((id) => id !== d.id)
-                              : [...prev, d.id]
-                          )
-                        }
-                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer ${
-                          checked
-                            ? 'bg-[#5865F2] text-white'
-                            : 'bg-white/10 text-zinc-300 hover:bg-white/20'
-                        }`}
-                      >
-                        {checked ? 'Añadido' : '+ Grupo'}
-                      </button>
-                    </div>
-                  );
-                })}
+                          className={`px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer ${
+                            checked
+                              ? 'bg-[#5865F2] text-white'
+                              : 'bg-white/10 text-zinc-300 hover:bg-white/20'
+                          }`}
+                        >
+                          {checked ? 'Añadido' : '+ Grupo'}
+                        </button>
+                      </div>
+                    );
+                  })
+              )}
             </div>
 
             {groupMemberIds.length >= 1 && (
